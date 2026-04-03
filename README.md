@@ -54,7 +54,9 @@ fraud-detection/
 
 ## 🤖 模型说明
 
-| 项目 | 详情 |
+| 项目 | 详情 |<img width="391" height="195" alt="{C0F8D7B5-CC88-4342-BC5D-EBD1BD6E7F2B}" src="https://github.com/user-attachments/assets/8c62746b-2262-4262-83c4-8880164dca30" />
+<img width="865" height="305" alt="{09D7487F-A61D-4BC4-9143-CB62B2761E1B}" src="https://github.com/user-attachments/assets/4aca7c87-3ad8-4aa1-ae47-29008e632db5" />
+
 |---|---|
 | 基础学习器 | HistGradientBoosting + RandomForest |
 | 集成方式 | OOF Blending + Logistic Meta |
