@@ -1,6 +1,6 @@
 # 🔍 车险欺诈检测系统
 
-基于机器学习（HGB + RandomForest Blending）的车险理赔欺诈识别 Streamlit 应用。
+基于机器学习（XGBoost+HGB + RandomForest Blending）的车险理赔欺诈识别 Streamlit 应用。
 
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://your-app.streamlit.app)
 
