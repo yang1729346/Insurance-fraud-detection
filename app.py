@@ -800,23 +800,20 @@ def page_analysis(meta: dict):
 
         st.markdown("""
 **三模型 OOF Stacking 架构**
+        输入特征(138维)
+        ├─ XGBoost   ──┐
+        ├─ HGB       ──┼─► 元学习器(LR) ──► 最终欺诈概率
+        └─ RandomForest┘
+        每折独立 fit Target Encoder，防止目标泄露。
 
-```
-输入特征(138维)
-    ├─ XGBoost   ──┐
-    ├─ HGB       ──┼─► 元学习器(LR) ──► 最终欺诈概率
-    └─ RandomForest┘
-```
-每折独立 fit Target Encoder，防止目标泄露。
+        **编码策略**
 
-**编码策略**
-
-| 类型 | 字段 | 方法 |
-|---|---|---|
-| 超高基数 | 邮编(699类) | 丢弃 |
-| 高基数 | 职业、爱好、车型品牌 | 贝叶斯平滑 Target Encoding |
-| 低基数 | 严重程度、事故类型等 | One-Hot Encoding |
-""")
+        | 类型 | 字段 | 方法 |
+        |---|---|---|
+        | 超高基数 | 邮编(699类) | 丢弃 |
+        | 高基数 | 职业、爱好、车型品牌 | 贝叶斯平滑 Target Encoding |
+        | 低基数 | 严重程度、事故类型等 | One-Hot Encoding |
+        """)
 
         st.subheader("⚡ 特征工程维度")
         dims = {
@@ -835,16 +832,16 @@ def page_analysis(meta: dict):
                           plot_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(fig, use_container_width=True, key="dims_chart")
 
-    # 业务解读
+        # 业务解读
     st.markdown("---")
     st.subheader("💼 关键欺诈信号解读")
     signals = [
         ("事故严重度 = 严重损毁", "60.0%", "🔴", "严重损失事故的欺诈率是平均水平的 2.3倍"),
         ("爱好 = 国际象棋 / 健身训练", "88% / 67%", "🔴", "特定爱好群体呈现异常欺诈集中"),
-        ("职业 = 高管",               "38.6%", "🟡", "高管职业欺诈率显著高于平均"),
-        ("目击者 ≥ 2",               "34.1%", "🟡", "多目击者反而欺诈率更高，疑似团伙"),
-        ("无警察报告",               "27.1%", "🟡", "回避当局是欺诈的典型行为模式"),
-        ("事故类型 = 车辆盗窃",       "7.4%",  "🟢", "车辆盗窃类案件欺诈率最低"),
+        ("职业 = 高管", "38.6%", "🟡", "高管职业欺诈率显著高于平均"),
+        ("目击者 ≥ 2", "34.1%", "🟡", "多目击者反而欺诈率更高，疑似团伙"),
+        ("无警察报告", "27.1%", "🟡", "回避当局是欺诈的典型行为模式"),
+        ("事故类型 = 车辆盗窃", "7.4%", "🟢", "车辆盗窃类案件欺诈率最低"),
     ]
     for sig, rate, icon, note in signals:
         with st.container():
@@ -861,8 +858,8 @@ def page_analysis(meta: dict):
 
 def main():
     artifacts = load_model()
-    meta      = load_meta()
-    page      = sidebar()
+    meta = load_meta()
+    page = sidebar()
 
     if "首页" in page:
         page_home(meta)
