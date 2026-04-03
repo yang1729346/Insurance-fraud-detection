@@ -1,33 +1,64 @@
 {
   "metrics": {
-    "oof_auc": 0.8587,
-    "blend_auc": 0.8535,
-    "blend_f1": 0.7322
+    "oof_auc": 0.8565,
+    "blend_auc": 0.8574,
+    "blend_f1": 0.7295,
+    "XGBoost_auc": 0.8606,
+    "HGB_auc": 0.8565,
+    "RandomForest_auc": 0.8451
   },
   "fraud_rate": 0.25857142857142856,
   "train_size": 700,
   "top_features": [
     "incident_severity_Major Damage",
     "insured_hobbies",
-    "severity_type_combo_Major_Damage__Multi-vehicle_Collision",
-    "severity_type_combo_Major_Damage__Single_Vehicle_Collision",
     "auto_model",
-    "incident_severity_Minor Damage",
     "is_extreme_hobby",
+    "incident_severity_Minor Damage",
     "vehicle_claim",
-    "is_high_risk_hobby",
-    "total_claim_amount"
+    "claim_to_premium_ratio",
+    "claim_to_csl_ratio",
+    "total_claim_amount",
+    "is_high_risk_hobby"
   ],
   "feat_imp_values": {
-    "incident_severity_Major Damage": 0.117,
-    "insured_hobbies": 0.0968,
-    "severity_type_combo_Major_Damage__Multi-vehicle_Collision": 0.0431,
-    "severity_type_combo_Major_Damage__Single_Vehicle_Collision": 0.0411,
-    "auto_model": 0.041,
-    "incident_severity_Minor Damage": 0.0322,
-    "is_extreme_hobby": 0.0317,
-    "vehicle_claim": 0.0278,
-    "is_high_risk_hobby": 0.0261,
-    "total_claim_amount": 0.0247
+    "incident_severity_Major Damage": 0.0937,
+    "insured_hobbies": 0.0906,
+    "auto_model": 0.0474,
+    "is_extreme_hobby": 0.0324,
+    "incident_severity_Minor Damage": 0.0313,
+    "vehicle_claim": 0.0297,
+    "claim_to_premium_ratio": 0.0283,
+    "claim_to_csl_ratio": 0.0264,
+    "total_claim_amount": 0.0258,
+    "is_high_risk_hobby": 0.024
+  },
+  "model_names": [
+    "XGBoost",
+    "HGB",
+    "RandomForest"
+  ],
+  "stacking_detail": {
+    "XGBoost": {
+      "auc": 0.8606,
+      "f1": 0.6564
+    },
+    "HGB": {
+      "auc": 0.8565,
+      "f1": 0.6738
+    },
+    "RandomForest": {
+      "auc": 0.8451,
+      "f1": 0.7033
+    },
+    "Stacking": {
+      "auc": 0.8574,
+      "f1": 0.7295,
+      "pr_auc": 0.6061
+    },
+    "business": {
+      "precision_top10pct": 0.6,
+      "recall_top10pct": 0.232
+    }
   }
 }
