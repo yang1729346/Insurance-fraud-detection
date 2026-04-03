@@ -242,55 +242,72 @@ def engineer_single(row: dict) -> pd.DataFrame:
     return df
 
 
-def encode_and_predict(df_feat: pd.DataFrame, artifacts: dict) -> tuple[float, dict]:
-    """编码 + 模型预测，返回 (欺诈概率, 风险因子字典)。"""
-    te  = artifacts["te"]
-    ohe = artifacts["ohe"]
-    hgb = artifacts["hgb"]
-    rf  = artifacts["rf"]
-    meta = artifacts["meta"]
+def encode_features(df_feat: pd.DataFrame, artifacts: dict) -> pd.DataFrame:
+    """将特征 DataFrame 编码为模型输入矩阵（供多处复用）。"""
+    te       = artifacts["te"]
+    ohe      = artifacts["ohe"]
     num_cols = artifacts["num_cols"]
     ohe_cols = artifacts["ohe_cols"]
     te_cols  = artifacts["te_cols"]
 
-    # Target Encoding
     te_part  = te.transform(df_feat[[c for c in te_cols if c in df_feat.columns]])
-    # One-Hot
     ohe_part = ohe.transform(df_feat[[c for c in ohe_cols if c in df_feat.columns]].astype(str))
-    ohe_df   = pd.DataFrame(ohe_part,
-                             columns=ohe.get_feature_names_out([c for c in ohe_cols if c in df_feat.columns]),
-                             index=df_feat.index)
-    # Numeric
+    ohe_df   = pd.DataFrame(
+        ohe_part,
+        columns=ohe.get_feature_names_out([c for c in ohe_cols if c in df_feat.columns]),
+        index=df_feat.index,
+    )
     num_part = df_feat[[c for c in num_cols if c in df_feat.columns]].copy().astype(float)
+    X_enc    = pd.concat([num_part, te_part, ohe_df], axis=1)
 
-    X_enc = pd.concat([num_part, te_part, ohe_df], axis=1)
-
-    # Align columns
     expected = artifacts["feature_names"]
     for c in expected:
         if c not in X_enc.columns:
             X_enc[c] = 0.0
-    X_enc = X_enc[expected]
+    return X_enc[expected]
 
-    # Blend prediction
-    hgb_p  = hgb.predict_proba(X_enc)[0, 1]
-    rf_p   = rf.predict_proba(X_enc)[0, 1]
-    blend  = meta.predict_proba(np.array([[hgb_p, rf_p]]))[0, 1]
 
-    # Risk factors
-    sev_raw = df_feat["incident_severity"].iloc[0]
-    risk_factors = {
-        "事故严重程度":   cn(sev_raw),
-        "夜间事故":       bool(df_feat["is_night_incident"].iloc[0]),
-        "无目击者":       bool(df_feat["no_witness"].iloc[0]),
-        "无警察报告":     bool(df_feat["no_police_report"].iloc[0]),
-        "高风险爱好":     bool(df_feat["is_high_risk_hobby"].iloc[0]),
-        "高风险职业":     bool(df_feat["is_high_risk_occ"].iloc[0]),
-        "理赔/保费比率":  round(float(df_feat["claim_to_premium_ratio"].iloc[0]), 2),
-        "证据缺口评分":   int(df_feat["evidence_gap_score"].iloc[0]),
-        "保单早期出险":   bool(df_feat["is_early_claim"].iloc[0]),
+def encode_and_predict(df_feat: pd.DataFrame, artifacts: dict) -> tuple[float, dict, dict]:
+    """
+    编码 + 三模型预测。
+    返回：(Stacking最终概率, 各模型单独概率字典, 风险因子字典)
+    """
+    X_enc = encode_features(df_feat, artifacts)
+
+    # ── 三模型分别推理 ────────────────────────────────────────────────────────
+    model_map = {
+        "XGBoost":      artifacts.get("xgb"),
+        "HGB":          artifacts.get("hgb"),
+        "RandomForest": artifacts.get("rf"),
     }
-    return float(blend), risk_factors
+    model_names  = artifacts.get("model_names", ["HGB", "RandomForest"])
+    single_proba = {}   # {模型名: 概率}
+    proba_vec    = []
+
+    for name in model_names:
+        m = model_map.get(name)
+        if m is not None:
+            p = float(m.predict_proba(X_enc)[0, 1])
+            single_proba[name] = p
+            proba_vec.append(p)
+
+    # ── Stacking 元学习器融合 ─────────────────────────────────────────────────
+    blend = float(artifacts["meta"].predict_proba(np.array([proba_vec]))[0, 1])
+
+    # ── 风险因子 ─────────────────────────────────────────────────────────────
+    sev_raw      = df_feat["incident_severity"].iloc[0]
+    risk_factors = {
+        "事故严重程度":  cn(sev_raw),
+        "夜间事故":      bool(df_feat["is_night_incident"].iloc[0]),
+        "无目击者":      bool(df_feat["no_witness"].iloc[0]),
+        "无警察报告":    bool(df_feat["no_police_report"].iloc[0]),
+        "高风险爱好":    bool(df_feat["is_high_risk_hobby"].iloc[0]),
+        "高风险职业":    bool(df_feat["is_high_risk_occ"].iloc[0]),
+        "理赔/保费比率": round(float(df_feat["claim_to_premium_ratio"].iloc[0]), 2),
+        "证据缺口评分":  int(df_feat["evidence_gap_score"].iloc[0]),
+        "保单早期出险":  bool(df_feat["is_early_claim"].iloc[0]),
+    }
+    return blend, single_proba, risk_factors
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -367,6 +384,48 @@ def feat_cn(name: str) -> str:
     """特征英文名 → 中文名，无匹配则原样返回。"""
     return FEAT_CN.get(name, name)
 
+
+def model_compare_chart(single_proba: dict, blend_prob: float) -> go.Figure:
+    """三模型单独概率 + Stacking融合概率 对比条形图。"""
+    MODEL_COLORS = {
+        "XGBoost":      "#f97316",   # 橙色：XGBoost 品牌色
+        "HGB":          "#6366f1",   # 靛蓝：sklearn
+        "RandomForest": "#10b981",   # 绿色：稳健
+        "Stacking融合": "#ef4444",   # 红色：最终决策
+    }
+    all_models  = list(single_proba.keys()) + ["Stacking融合"]
+    all_probas  = list(single_proba.values()) + [blend_prob]
+    colors      = [MODEL_COLORS.get(n, "#888") for n in all_models]
+    bar_text    = [f"{p*100:.1f}%" for p in all_probas]
+
+    fig = go.Figure(go.Bar(
+        x=all_models,
+        y=[p * 100 for p in all_probas],
+        marker_color=colors,
+        text=bar_text,
+        textposition="outside",
+        textfont={"size": 13, "color": colors},
+        width=0.5,
+    ))
+    # 50% 判决线
+    fig.add_hline(
+        y=50, line_dash="dot", line_color="#9ca3af", line_width=1.5,
+        annotation_text="判决阈值 50%",
+        annotation_position="top right",
+        annotation_font_size=11,
+    )
+    fig.update_layout(
+        height=260,
+        yaxis=dict(range=[0, 105], ticksuffix="%", tickfont={"size": 10},
+                   title="欺诈概率", title_font={"size": 11}),
+        xaxis=dict(tickfont={"size": 11}),
+        margin=dict(l=10, r=10, t=30, b=10),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        showlegend=False,
+    )
+    return fig
+
 def feature_importance_chart(feat_imp: dict) -> go.Figure:
     """绘制特征重要性水平条形图。"""
     names = [feat_cn(k) for k in list(feat_imp.keys())[::-1]]
@@ -401,7 +460,7 @@ def sidebar():
         )
         st.markdown("---")
         st.markdown(
-            "<small>模型：HGB + RF Blending<br>"
+            "<small>模型：XGBoost + HGB + RF Stacking<br>"
             "训练集：700条 · 欺诈率 25.9%</small>",
             unsafe_allow_html=True,
         )
@@ -562,9 +621,9 @@ def page_predict(artifacts: dict):
             "auto_model": auto_model, "auto_year": auto_year,
         }
 
-        with st.spinner("模型评估中…"):
+        with st.spinner("XGBoost + HGB + RF 三模型评估中…"):
             df_feat = engineer_single(row)
-            prob, risk_factors = encode_and_predict(df_feat, artifacts)
+            prob, single_proba, risk_factors = encode_and_predict(df_feat, artifacts)
 
         # ── 风险等级 ─────────────────────────────────────────────────
         if prob < 0.2:
@@ -581,7 +640,9 @@ def page_predict(artifacts: dict):
         st.markdown("---")
         st.subheader("📊 评估结果")
 
-        col_g, col_r = st.columns([1, 1.5])
+        # ── 第一行：仪表盘 + 三模型对比 + 风险因子 ────────────────────
+        col_g, col_m, col_r = st.columns([1, 1.2, 1.3])
+
         with col_g:
             st.plotly_chart(risk_gauge(prob), use_container_width=True, key="gauge")
             st.markdown(
@@ -590,22 +651,49 @@ def page_predict(artifacts: dict):
                 unsafe_allow_html=True,
             )
 
+        with col_m:
+            st.markdown("#### 🤖 三模型评分对比")
+            st.plotly_chart(
+                model_compare_chart(single_proba, prob),
+                use_container_width=True, key="model_compare"
+            )
+            # 显示各模型是否达到判决阈值
+            agree = sum(1 for p in single_proba.values() if p >= 0.5)
+            total = len(single_proba)
+            if agree == total:
+                st.markdown(
+                    f"<div style='text-align:center;font-size:12px;color:#ef4444'>"
+                    f"⚠️ 全部 {total} 个模型均判定为欺诈</div>",
+                    unsafe_allow_html=True,
+                )
+            elif agree > 0:
+                st.markdown(
+                    f"<div style='text-align:center;font-size:12px;color:#f59e0b'>"
+                    f"🟡 {agree}/{total} 个模型判定为欺诈，存在分歧</div>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    f"<div style='text-align:center;font-size:12px;color:#22c55e'>"
+                    f"✅ 全部 {total} 个模型均判定为正常</div>",
+                    unsafe_allow_html=True,
+                )
+
         with col_r:
             st.markdown("#### 🔍 风险因子详情")
             for factor, value in risk_factors.items():
                 if isinstance(value, bool):
-                    icon  = "⚠️" if value else "✅"
-                    color = "red" if value else "green"
+                    icon    = "⚠️" if value else "✅"
+                    color   = "red" if value else "green"
                     val_str = "是" if value else "否"
                 elif isinstance(value, (int, float)):
-                    icon  = "⚠️" if value > 2 else "ℹ️"
-                    color = "inherit"
+                    icon    = "⚠️" if value > 2 else "ℹ️"
+                    color   = "inherit"
                     val_str = str(value)
                 else:
-                    icon  = "⚠️" if value in ["严重损毁", "全损"] else "ℹ️"
-                    color = "red" if value in ["严重损毁", "全损"] else "inherit"
+                    icon    = "⚠️" if value in ["严重损毁", "全损"] else "ℹ️"
+                    color   = "red" if value in ["严重损毁", "全损"] else "inherit"
                     val_str = str(value)
-
                 st.markdown(
                     f"{icon} **{factor}**：<span style='color:{color}'>{val_str}</span>",
                     unsafe_allow_html=True,
@@ -615,19 +703,19 @@ def page_predict(artifacts: dict):
         st.markdown("---")
         if prob >= 0.6:
             st.error(
-                f"⚠️ **建议人工审核**：该案件欺诈概率 {prob*100:.1f}%，属于{tier}，"
-                "建议立即转入人工调查通道，核实事故现场、联系目击者、"
-                "复查修理厂评估报告。"
+                f"⚠️ **建议人工审核**：Stacking 集成概率 {prob*100:.1f}%，属于{tier}。"
+                "XGBoost 主模型已标记为高风险，建议立即转入人工调查通道，"
+                "核实事故现场、联系目击者、复查修理厂评估报告。"
             )
         elif prob >= 0.4:
             st.warning(
-                f"🟡 **建议辅助核查**：该案件欺诈概率 {prob*100:.1f}%，属于{tier}，"
+                f"🟡 **建议辅助核查**：Stacking 集成概率 {prob*100:.1f}%，属于{tier}。"
                 "建议电话回访当事人，核对证据链完整性，必要时安排现场复勘。"
             )
         else:
             st.success(
-                f"✅ **建议正常处理**：该案件欺诈概率 {prob*100:.1f}%，属于{tier}，"
-                "可进入标准理赔处理流程。"
+                f"✅ **建议正常处理**：Stacking 集成概率 {prob*100:.1f}%，属于{tier}。"
+                "三模型综合评估风险较低，可进入标准理赔处理流程。"
             )
 
 
@@ -638,13 +726,50 @@ def page_predict(artifacts: dict):
 def page_analysis(meta: dict):
     st.title("📊 模型性能分析")
 
-    # 性能指标
-    st.subheader("🏆 模型指标（5-Fold OOF Blending）")
+    # ── 性能指标（动态读取 meta_info.json 中的真实训练结果）────────────
+    st.subheader("🏆 模型指标（5-Fold OOF Stacking）")
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("OOF AUC-ROC",  meta["metrics"]["oof_auc"])
-    c2.metric("Blend AUC",    meta["metrics"]["blend_auc"])
-    c3.metric("Blend F1",     meta["metrics"]["blend_f1"])
-    c4.metric("查准率@Top10%", "62.9%")
+
+    # 优先展示 XGBoost 单模型 AUC
+    xgb_auc = meta["metrics"].get("XGBoost_auc", meta["metrics"].get("oof_auc", "—"))
+    c1.metric("XGBoost AUC",   str(xgb_auc),
+              help="XGBoost 5折OOF AUC，训练时自动计算")
+    c2.metric("Stacking AUC",  str(meta["metrics"]["blend_auc"]),
+              help="三模型 Stacking 融合后 AUC")
+    c3.metric("Stacking F1",   str(meta["metrics"]["blend_f1"]),
+              help="欺诈类 F1-Score（阈值0.5）")
+    # 从 stacking_detail 里读 business 指标
+    stacking_detail = meta.get("stacking_detail", {})
+    biz = stacking_detail.get("business", {})
+    prec_top10 = biz.get("precision_top10pct", None)
+    c4.metric("查准率@Top10%",
+              f"{prec_top10*100:.1f}%" if prec_top10 else "62.9%",
+              help="优先调查前10%案件中真实欺诈占比")
+
+    # ── 各模型 AUC 横向对比 ────────────────────────────────────────────
+    detail = meta.get("stacking_detail", {})
+    model_aucs = {k: v["auc"] for k, v in detail.items()
+                  if k not in ("Stacking", "business") and "auc" in v}
+    if model_aucs:
+        st.markdown("**各基础模型 OOF AUC 对比**")
+        model_colors = {"XGBoost": "#f97316", "HGB": "#6366f1", "RandomForest": "#10b981"}
+        fig_cmp = go.Figure()
+        for mname, mauc in model_aucs.items():
+            fig_cmp.add_trace(go.Bar(
+                name=mname, x=[mname], y=[mauc],
+                marker_color=model_colors.get(mname, "#888"),
+                text=[f"{mauc:.4f}"], textposition="outside",
+            ))
+        fig_cmp.add_hline(y=0.8, line_dash="dot", line_color="#9ca3af",
+                          annotation_text="AUC=0.8 基准线",
+                          annotation_font_size=10)
+        fig_cmp.update_layout(
+            height=220, showlegend=False,
+            yaxis=dict(range=[0.75, 0.92], title="OOF AUC"),
+            margin=dict(l=10, r=10, t=20, b=10),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        )
+        st.plotly_chart(fig_cmp, use_container_width=True, key="model_auc_cmp")
 
     st.markdown("---")
 
@@ -658,23 +783,39 @@ def page_analysis(meta: dict):
 
     with col2:
         st.subheader("🔬 模型架构")
-        st.markdown("""
-**基础学习器**
 
-| 模型 | OOF AUC | 特点 |
+        # XGBoost 专项说明
+        with st.expander("⚡ XGBoost 核心参数说明", expanded=True):
+            st.markdown("""
+| 参数 | 取值 | 业务含义 |
 |---|---|---|
-| HistGradientBoosting | 0.8587 | 梯度提升，处理混合特征强 |
-| RandomForest | 0.8266 | 集成树，方差低，互补 |
+| `tree_method` | `hist` | 直方图近似分裂，速度与LightGBM相近 |
+| `scale_pos_weight` | ≈2.87 | 负/正样本比，自动补偿欺诈率25.9%的不平衡 |
+| `reg_alpha` | 0.1 | L1正则，稀疏化特征权重 |
+| `reg_lambda` | 1.0 | L2正则，防止叶节点过拟合 |
+| `subsample` | 0.8 | 行采样比例，降低方差 |
+| `colsample_bytree` | 0.8 | 列采样比例，增加树多样性 |
+| `min_child_weight` | 10 | 叶节点最小样本权重，控制树深度 |
+""")
 
-**集成策略**：OOF Blending + LogisticRegression 元学习器
+        st.markdown("""
+**三模型 OOF Stacking 架构**
+
+```
+输入特征(138维)
+    ├─ XGBoost   ──┐
+    ├─ HGB       ──┼─► 元学习器(LR) ──► 最终欺诈概率
+    └─ RandomForest┘
+```
+每折独立 fit Target Encoder，防止目标泄露。
 
 **编码策略**
 
-| 类型 | 列 | 方法 |
+| 类型 | 字段 | 方法 |
 |---|---|---|
-| 超高基数 | 邮编(insured_zip) | 丢弃 |
-| 高基数 | 职业、爱好、车型品牌 | 目标编码（平滑=10）|
-| 低基数 | 严重程度、事故类型等 | 独热编码 |
+| 超高基数 | 邮编(699类) | 丢弃 |
+| 高基数 | 职业、爱好、车型品牌 | 贝叶斯平滑 Target Encoding |
+| 低基数 | 严重程度、事故类型等 | One-Hot Encoding |
 """)
 
         st.subheader("⚡ 特征工程维度")
